@@ -169,10 +169,25 @@ const App = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: aiMessage })
       });
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Erro na IA');
+      }
+
       const data = await res.json();
+      if (!data.amount) throw new Error('Valor não identificado');
+      
       setParsedExpense({ ...data, type: 'expense' });
-    } catch (error) {
+      setToast({ message: 'IA processou com sucesso!', type: 'success' });
+    } catch (error: any) {
       console.error('Error parsing AI message:', error);
+      setToast({ 
+        message: error.message === 'Failed to fetch' 
+          ? 'Erro de conexão. Use o formulário manual.' 
+          : 'IA falhou. Tente o formulário manual abaixo.', 
+        type: 'error' 
+      });
     } finally {
       setIsParsing(false);
     }
@@ -588,6 +603,7 @@ const App = () => {
                   category: 'Receita',
                   payment_method: 'Pix'
                 });
+                (e.target as HTMLFormElement).reset();
               }} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <input name="amount" type="number" step="0.01" placeholder="Valor" required className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
@@ -597,6 +613,50 @@ const App = () => {
                 <input name="responsible" type="text" placeholder="Responsável" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
                 <button type="submit" className="w-full bg-zinc-900 text-white font-bold py-3 rounded-2xl hover:bg-zinc-800 transition-all">
                   Adicionar Receita
+                </button>
+              </form>
+            </div>
+
+            {/* Manual Expense Form Fallback */}
+            <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-100 space-y-4">
+              <h3 className="font-bold text-zinc-800 flex items-center gap-2">
+                <Minus size={18} className="text-rose-500" />
+                Adicionar Despesa Manual
+              </h3>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                handleAddTransaction({
+                  type: 'expense',
+                  amount: Number(formData.get('amount')),
+                  date: formData.get('date') as string,
+                  description: formData.get('description') as string,
+                  responsible: formData.get('responsible') as string,
+                  category: formData.get('category') as string,
+                  payment_method: formData.get('payment_method') as string
+                });
+                (e.target as HTMLFormElement).reset();
+              }} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <input name="amount" type="number" step="0.01" placeholder="Valor" required className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
+                  <input name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} required className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <select name="category" required className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500">
+                    <option value="Necessário">Necessário</option>
+                    <option value="Lazer">Lazer</option>
+                    <option value="Investimento">Investimento</option>
+                  </select>
+                  <select name="payment_method" required className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500">
+                    <option value="Pix">Pix</option>
+                    <option value="Crédito">Crédito</option>
+                    <option value="Débito">Débito</option>
+                  </select>
+                </div>
+                <input name="description" type="text" placeholder="Observação (ex: Almoço)" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
+                <input name="responsible" type="text" placeholder="Responsável" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
+                <button type="submit" className="w-full bg-rose-600 text-white font-bold py-3 rounded-2xl hover:bg-rose-700 transition-all">
+                  Adicionar Despesa
                 </button>
               </form>
             </div>
