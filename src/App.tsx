@@ -71,17 +71,28 @@ const App = () => {
   };
 
   const fetchData = async () => {
+    setLoading(true);
     try {
       const [tRes, sRes] = await Promise.all([
         fetch('/api/transactions'),
         fetch('/api/stats')
       ]);
+      
+      if (!tRes.ok) throw new Error('Server unavailable');
+      
       const tData = await tRes.json();
       const sData = await sRes.json();
       setTransactions(tData);
       setStats(sData);
+      
+      // Sync local storage with server data
+      localStorage.setItem('finance_transactions', JSON.stringify(tData));
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.warn('Using local storage fallback:', error);
+      const localData = localStorage.getItem('finance_transactions');
+      if (localData) {
+        setTransactions(JSON.parse(localData));
+      }
     } finally {
       setLoading(false);
     }
@@ -99,6 +110,11 @@ const App = () => {
   }, [toast]);
 
   const handleAddTransaction = async (data: Partial<Transaction>) => {
+    // Optimistic local update
+    const tempId = Date.now();
+    const newTransaction = { ...data, id: tempId, created_at: new Date().toISOString() } as Transaction;
+    const updatedTransactions = [newTransaction, ...transactions];
+    
     try {
       const res = await fetch('/api/transactions', {
         method: 'POST',
@@ -109,30 +125,38 @@ const App = () => {
       const result = await res.json();
 
       if (res.ok && result.success) {
-        setToast({ message: 'Salvo com sucesso!', type: 'success' });
+        setToast({ message: 'Salvo no servidor!', type: 'success' });
         fetchData();
-        setActiveTab('dashboard');
-        setParsedExpense(null);
-        setAiMessage('');
       } else {
-        setToast({ message: result.error || 'Erro ao salvar', type: 'error' });
+        throw new Error('Server error');
       }
     } catch (error) {
-      console.error('Error adding transaction:', error);
-      setToast({ message: 'Erro de conexão com o servidor', type: 'error' });
+      console.error('Server save failed, keeping local only:', error);
+      setTransactions(updatedTransactions);
+      localStorage.setItem('finance_transactions', JSON.stringify(updatedTransactions));
+      setToast({ message: 'Salvo localmente (Offline)', type: 'success' });
+    } finally {
+      setActiveTab('dashboard');
+      setParsedExpense(null);
+      setAiMessage('');
     }
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('Tem certeza que deseja excluir?')) return;
+    
+    // Local update
+    const updatedTransactions = transactions.filter(t => t.id !== id);
+    setTransactions(updatedTransactions);
+    localStorage.setItem('finance_transactions', JSON.stringify(updatedTransactions));
+
     try {
       const res = await fetch(`/api/transactions/${id}`, { method: 'DELETE' });
       if (res.ok) {
-        setToast({ message: 'Excluído com sucesso', type: 'success' });
-        fetchData();
+        setToast({ message: 'Excluído em todo lugar', type: 'success' });
       }
     } catch (error) {
-      setToast({ message: 'Erro ao excluir', type: 'error' });
+      setToast({ message: 'Excluído apenas deste aparelho', type: 'success' });
     }
   };
 
