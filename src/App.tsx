@@ -49,6 +49,7 @@ const App = () => {
   const [isParsing, setIsParsing] = useState(false);
   const [parsedExpense, setParsedExpense] = useState<Partial<Transaction> | null>(null);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+  const [needsSync, setNeedsSync] = useState(false);
   
   // Filter states
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
@@ -118,27 +119,54 @@ const App = () => {
       const tData = await tRes.json();
       const sData = await sRes.json();
       const cData = await cRes.json();
-      setTransactions(tData);
-      setStats(sData);
-      setCards(cData);
       
-      // Sync local storage with server data
-      localStorage.setItem('finance_transactions', JSON.stringify(tData));
+      const localData = localStorage.getItem('finance_transactions');
+      const localTransactions = localData ? JSON.parse(localData) : [];
+
+      // If server is empty but we have local data, we might need to sync up
+      if (tData.length === 0 && localTransactions.length > 0) {
+        setNeedsSync(true);
+        setTransactions(localTransactions);
+        setStats(calculateStatsLocally(localTransactions));
+      } else {
+        setTransactions(tData);
+        setStats(sData);
+        setNeedsSync(false);
+        // Update local storage to match server
+        localStorage.setItem('finance_transactions', JSON.stringify(tData));
+      }
+      
+      setCards(cData);
       localStorage.setItem('finance_cards', JSON.stringify(cData));
     } catch (error) {
       console.warn('Using local storage fallback:', error);
       const localData = localStorage.getItem('finance_transactions');
-      const localCards = localStorage.getItem('finance_cards');
       if (localData) {
         const parsedData = JSON.parse(localData);
         setTransactions(parsedData);
         setStats(calculateStatsLocally(parsedData));
       }
-      if (localCards) {
-        setCards(JSON.parse(localCards));
-      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForceSync = async () => {
+    setToast({ message: 'Sincronizando dados com a nuvem...', type: 'success' });
+    try {
+      // Upload all local transactions to server
+      for (const t of transactions) {
+        await fetch('/api/transactions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(t)
+        });
+      }
+      setNeedsSync(false);
+      setToast({ message: 'Todos os dispositivos agora estão iguais!', type: 'success' });
+      fetchData();
+    } catch (error) {
+      setToast({ message: 'Erro ao sincronizar', type: 'error' });
     }
   };
 
@@ -344,6 +372,29 @@ const App = () => {
           >
             {toast.type === 'success' ? <CheckCircle2 size={18} /> : <TrendingDown size={18} />}
             {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Sync Banner */}
+      <AnimatePresence>
+        {needsSync && (
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            className="bg-amber-50 border-b border-amber-100 px-4 py-2"
+          >
+            <div className="max-w-md mx-auto flex justify-between items-center">
+              <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wider">
+                Dados locais detectados. Sincronizar com outros aparelhos?
+              </p>
+              <button 
+                onClick={handleForceSync}
+                className="bg-amber-600 text-white text-[10px] font-bold px-3 py-1 rounded-lg hover:bg-amber-700 transition-colors"
+              >
+                Sincronizar Agora
+              </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
