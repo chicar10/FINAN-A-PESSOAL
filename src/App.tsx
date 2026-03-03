@@ -36,13 +36,15 @@ import {
 import { format, parseISO, startOfMonth, endOfMonth } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
-import { Transaction, MonthlyStats } from './types';
+import { Transaction, MonthlyStats, CardLimit } from './types';
 
 const App = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [stats, setStats] = useState<MonthlyStats[]>([]);
+  const [cards, setCards] = useState<CardLimit[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'add'>('dashboard');
+  const [showCardManager, setShowCardManager] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [parsedExpense, setParsedExpense] = useState<Partial<Transaction> | null>(null);
@@ -52,6 +54,37 @@ const App = () => {
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [filterResponsible, setFilterResponsible] = useState<string>('all');
+  const [filterBank, setFilterBank] = useState<string>('all');
+
+  // Helper to calculate stats locally when server is offline
+  const calculateStatsLocally = (data: Transaction[]) => {
+    const monthlyData: { [key: string]: { income: number, expense: number } } = {};
+    
+    data.forEach(t => {
+      try {
+        const month = t.date.substring(0, 7); // Pega YYYY-MM
+        if (!monthlyData[month]) {
+          monthlyData[month] = { income: 0, expense: 0 };
+        }
+        if (t.type === 'income') {
+          monthlyData[month].income += t.amount;
+        } else {
+          monthlyData[month].expense += t.amount;
+        }
+      } catch (e) {
+        console.error("Erro ao processar data para gráfico:", e);
+      }
+    });
+
+    return Object.entries(monthlyData)
+      .map(([month, values]) => ({
+        month,
+        income: values.income,
+        expense: values.expense
+      }))
+      .sort((a, b) => a.month.localeCompare(b.month)) // Ordem cronológica para o gráfico de barras
+      .slice(-12); // Últimos 12 meses
+  };
 
   const exportToExcel = () => {
     const dataToExport = filteredTransactions.map(t => ({
@@ -60,6 +93,7 @@ const App = () => {
       Data: format(parseISO(t.date), 'dd/MM/yyyy'),
       Responsável: t.responsible,
       'Forma de Pagamento': t.payment_method,
+      Banco: t.bank || '-',
       Categoria: t.category,
       Observação: t.description
     }));
@@ -73,28 +107,66 @@ const App = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [tRes, sRes] = await Promise.all([
+      const [tRes, sRes, cRes] = await Promise.all([
         fetch('/api/transactions'),
-        fetch('/api/stats')
+        fetch('/api/stats'),
+        fetch('/api/cards')
       ]);
       
       if (!tRes.ok) throw new Error('Server unavailable');
       
       const tData = await tRes.json();
       const sData = await sRes.json();
+      const cData = await cRes.json();
       setTransactions(tData);
       setStats(sData);
+      setCards(cData);
       
       // Sync local storage with server data
       localStorage.setItem('finance_transactions', JSON.stringify(tData));
+      localStorage.setItem('finance_cards', JSON.stringify(cData));
     } catch (error) {
       console.warn('Using local storage fallback:', error);
       const localData = localStorage.getItem('finance_transactions');
+      const localCards = localStorage.getItem('finance_cards');
       if (localData) {
-        setTransactions(JSON.parse(localData));
+        const parsedData = JSON.parse(localData);
+        setTransactions(parsedData);
+        setStats(calculateStatsLocally(parsedData));
+      }
+      if (localCards) {
+        setCards(JSON.parse(localCards));
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleAddCard = async (bank_name: string, limit_amount: number) => {
+    try {
+      const res = await fetch('/api/cards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bank_name, limit_amount })
+      });
+      if (res.ok) {
+        setToast({ message: 'Limite de cartão atualizado!', type: 'success' });
+        fetchData();
+      }
+    } catch (error) {
+      setToast({ message: 'Erro ao salvar limite', type: 'error' });
+    }
+  };
+
+  const handleDeleteCard = async (id: number) => {
+    try {
+      const res = await fetch(`/api/cards/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setToast({ message: 'Cartão removido', type: 'success' });
+        fetchData();
+      }
+    } catch (error) {
+      setToast({ message: 'Erro ao remover', type: 'error' });
     }
   };
 
@@ -125,7 +197,7 @@ const App = () => {
       const result = await res.json();
 
       if (res.ok && result.success) {
-        setToast({ message: 'Salvo no servidor!', type: 'success' });
+        setToast({ message: 'Sincronizado com servidor!', type: 'success' });
         fetchData();
       } else {
         throw new Error('Server error');
@@ -133,8 +205,9 @@ const App = () => {
     } catch (error) {
       console.error('Server save failed, keeping local only:', error);
       setTransactions(updatedTransactions);
+      setStats(calculateStatsLocally(updatedTransactions)); // Atualiza gráficos localmente
       localStorage.setItem('finance_transactions', JSON.stringify(updatedTransactions));
-      setToast({ message: 'Salvo localmente (Offline)', type: 'success' });
+      setToast({ message: 'Salvo no aparelho (Offline)', type: 'success' });
     } finally {
       setActiveTab('dashboard');
       setParsedExpense(null);
@@ -201,17 +274,37 @@ const App = () => {
     .filter(t => t.type === 'expense')
     .reduce((acc, t) => acc + t.amount, 0);
 
-  const balance = totalIncome - totalExpense;
+  // Cash Balance: Income - Expenses (excluding credit card expenses)
+  const cashBalance = totalIncome - transactions
+    .filter(t => t.type === 'expense' && t.payment_method !== 'Crédito')
+    .reduce((acc, t) => acc + t.amount, 0);
+
+  // Credit Card Usage per bank
+  const cardUsage = transactions
+    .filter(t => t.type === 'expense' && t.payment_method === 'Crédito')
+    .reduce((acc, t) => {
+      const bank = t.bank || 'Outros';
+      acc[bank] = (acc[bank] || 0) + t.amount;
+      return acc;
+    }, {} as { [key: string]: number });
+
+  const totalCardLimit = cards.reduce((acc, c) => acc + c.limit_amount, 0);
+  const totalCardUsage = Object.values(cardUsage).reduce((acc, val) => acc + val, 0);
+  const availableCardLimit = totalCardLimit - totalCardUsage;
+
+  const balance = cashBalance; // Dashboard shows cash balance as primary
 
   const filteredTransactions = transactions.filter(t => {
     const matchesType = filterType === 'all' || t.type === filterType;
     const matchesCategory = filterCategory === 'all' || t.category === filterCategory;
     const matchesResponsible = filterResponsible === 'all' || t.responsible === filterResponsible;
-    return matchesType && matchesCategory && matchesResponsible;
+    const matchesBank = filterBank === 'all' || t.bank === filterBank;
+    return matchesType && matchesCategory && matchesResponsible && matchesBank;
   });
 
   const uniqueCategories = ['Investimento', 'Necessário', 'Lazer'];
   const uniqueResponsibles = Array.from(new Set(transactions.map(t => t.responsible))).filter(Boolean);
+  const uniqueBanks = Array.from(new Set(transactions.map(t => t.bank))).filter(Boolean);
 
   const categoryData = [
     { name: 'Investimento', value: transactions.filter(t => t.category === 'Investimento').reduce((acc, t) => acc + t.amount, 0) },
@@ -220,6 +313,8 @@ const App = () => {
   ].filter(c => c.value > 0);
 
   const COLORS = ['#10b981', '#3b82f6', '#f59e0b'];
+
+  const [manualPaymentMethod, setManualPaymentMethod] = useState('Pix');
 
   return (
     <div className="min-h-screen bg-zinc-50 pb-24">
@@ -263,29 +358,107 @@ const App = () => {
             {/* Balance Card */}
             <div className="bg-zinc-900 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
               <div className="relative z-10">
-                <p className="text-zinc-400 text-sm font-medium">Saldo Total</p>
-                <h2 className="text-3xl font-bold mt-1">
-                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(balance)}
-                </h2>
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-zinc-400 text-sm font-medium">Saldo em Dinheiro</p>
+                    <h2 className="text-3xl font-bold mt-1">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(cashBalance)}
+                    </h2>
+                  </div>
+                  <button 
+                    onClick={() => setShowCardManager(!showCardManager)}
+                    className="bg-white/10 hover:bg-white/20 p-2 rounded-xl transition-colors"
+                    title="Gerenciar Cartões"
+                  >
+                    <CreditCard size={20} />
+                  </button>
+                </div>
+                
+                <div className="mt-6 pt-6 border-t border-white/10">
+                  <div className="flex justify-between items-end mb-2">
+                    <p className="text-zinc-400 text-xs font-medium uppercase tracking-wider">Limite dos Cartões</p>
+                    <p className="text-sm font-bold">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(availableCardLimit)}
+                      <span className="text-zinc-500 font-normal text-[10px] ml-1">/ {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalCardLimit)}</span>
+                    </p>
+                  </div>
+                  <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${Math.min(100, (availableCardLimit / totalCardLimit) * 100)}%` }}
+                      className="h-full bg-emerald-500"
+                    />
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4 mt-6">
                   <div className="bg-white/10 rounded-2xl p-3">
                     <div className="flex items-center gap-2 text-emerald-400 mb-1">
                       <TrendingUp size={14} />
                       <span className="text-[10px] font-bold uppercase tracking-wider">Receitas</span>
                     </div>
-                    <p className="font-semibold">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalIncome)}</p>
+                    <p className="font-semibold text-sm">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalIncome)}</p>
                   </div>
                   <div className="bg-white/10 rounded-2xl p-3">
                     <div className="flex items-center gap-2 text-rose-400 mb-1">
                       <TrendingDown size={14} />
                       <span className="text-[10px] font-bold uppercase tracking-wider">Despesas</span>
                     </div>
-                    <p className="font-semibold">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalExpense)}</p>
+                    <p className="font-semibold text-sm">{new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(totalExpense)}</p>
                   </div>
                 </div>
               </div>
               <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-emerald-500/20 rounded-full blur-3xl" />
             </div>
+
+            {/* Card Manager Section */}
+            <AnimatePresence>
+              {showCardManager && (
+                <motion.div 
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-100 space-y-4 overflow-hidden"
+                >
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-bold text-zinc-800">Gerenciar Limites</h3>
+                    <button onClick={() => setShowCardManager(false)} className="text-zinc-400 hover:text-zinc-600">
+                      <Plus className="rotate-45" size={20} />
+                    </button>
+                  </div>
+                  
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    const formData = new FormData(e.currentTarget);
+                    handleAddCard(formData.get('bank_name') as string, Number(formData.get('limit_amount')));
+                    (e.target as HTMLFormElement).reset();
+                  }} className="grid grid-cols-2 gap-2">
+                    <input name="bank_name" placeholder="Banco" required className="bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+                    <div className="flex gap-2">
+                      <input name="limit_amount" type="number" placeholder="Limite" required className="bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500 flex-1" />
+                      <button type="submit" className="bg-zinc-900 text-white p-2 rounded-xl">
+                        <Plus size={20} />
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+                    {cards.map(card => (
+                      <div key={card.id} className="flex justify-between items-center p-3 bg-zinc-50 rounded-2xl border border-zinc-100">
+                        <div>
+                          <p className="font-bold text-sm">{card.bank_name}</p>
+                          <p className="text-[10px] text-zinc-400 uppercase tracking-wider">Limite: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(card.limit_amount)}</p>
+                        </div>
+                        <button onClick={() => handleDeleteCard(card.id)} className="text-zinc-300 hover:text-rose-500">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ))}
+                    {cards.length === 0 && <p className="text-center text-xs text-zinc-400 py-4">Nenhum cartão cadastrado</p>}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Charts Section */}
             <div className="space-y-4">
@@ -419,6 +592,16 @@ const App = () => {
                     <option key={resp} value={resp}>{resp}</option>
                   ))}
                 </select>
+                <select 
+                  value={filterBank}
+                  onChange={(e) => setFilterBank(e.target.value)}
+                  className="bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="all">Todos Bancos</option>
+                  {uniqueBanks.map(bank => (
+                    <option key={bank} value={bank}>{bank}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -437,6 +620,12 @@ const App = () => {
                         <span>{t.responsible}</span>
                         <span>•</span>
                         <span>{t.category}</span>
+                        {t.bank && (
+                          <>
+                            <span>•</span>
+                            <span className="text-indigo-500">{t.bank}</span>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -552,6 +741,31 @@ const App = () => {
                         <option value="Débito">Débito</option>
                       </select>
                     </div>
+                    {parsedExpense.payment_method === 'Crédito' && (
+                      <>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Banco</label>
+                          <input 
+                            type="text" 
+                            value={parsedExpense.bank || ''} 
+                            onChange={(e) => setParsedExpense({...parsedExpense, bank: e.target.value})}
+                            className="w-full bg-white border-none rounded-xl p-2 text-sm"
+                            placeholder="Ex: Nubank"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Parcelas</label>
+                          <input 
+                            type="number" 
+                            min="1"
+                            max="48"
+                            value={parsedExpense.installments || 1} 
+                            onChange={(e) => setParsedExpense({...parsedExpense, installments: Number(e.target.value)})}
+                            className="w-full bg-white border-none rounded-xl p-2 text-sm"
+                          />
+                        </div>
+                      </>
+                    )}
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Categoria</label>
                       <select 
@@ -633,7 +847,9 @@ const App = () => {
                   description: formData.get('description') as string,
                   responsible: formData.get('responsible') as string,
                   category: formData.get('category') as string,
-                  payment_method: formData.get('payment_method') as string
+                  payment_method: formData.get('payment_method') as string,
+                  bank: formData.get('bank') as string || undefined,
+                  installments: Number(formData.get('installments')) || 1
                 });
                 (e.target as HTMLFormElement).reset();
               }} className="space-y-4">
@@ -647,12 +863,24 @@ const App = () => {
                     <option value="Lazer">Lazer</option>
                     <option value="Investimento">Investimento</option>
                   </select>
-                  <select name="payment_method" required className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500">
+                  <select 
+                    name="payment_method" 
+                    required 
+                    value={manualPaymentMethod}
+                    onChange={(e) => setManualPaymentMethod(e.target.value)}
+                    className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500"
+                  >
                     <option value="Pix">Pix</option>
                     <option value="Crédito">Crédito</option>
                     <option value="Débito">Débito</option>
                   </select>
                 </div>
+                {manualPaymentMethod === 'Crédito' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <input name="bank" type="text" placeholder="Qual o Banco? (ex: Nubank)" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
+                    <input name="installments" type="number" min="1" max="48" defaultValue="1" placeholder="Parcelas" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
+                  </div>
+                )}
                 <input name="description" type="text" placeholder="Observação (ex: Almoço)" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
                 <input name="responsible" type="text" placeholder="Responsável" required className="w-full bg-zinc-50 border border-zinc-200 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-rose-500" />
                 <button type="submit" className="w-full bg-rose-600 text-white font-bold py-3 rounded-2xl hover:bg-rose-700 transition-all">
