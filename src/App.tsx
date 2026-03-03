@@ -46,6 +46,7 @@ const App = () => {
   const [aiMessage, setAiMessage] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [parsedExpense, setParsedExpense] = useState<Partial<Transaction> | null>(null);
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   
   // Filter states
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
@@ -90,6 +91,13 @@ const App = () => {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
   const handleAddTransaction = async (data: Partial<Transaction>) => {
     try {
       const res = await fetch('/api/transactions', {
@@ -97,23 +105,34 @@ const App = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) {
+      
+      const result = await res.json();
+
+      if (res.ok && result.success) {
+        setToast({ message: 'Salvo com sucesso!', type: 'success' });
         fetchData();
         setActiveTab('dashboard');
         setParsedExpense(null);
         setAiMessage('');
+      } else {
+        setToast({ message: result.error || 'Erro ao salvar', type: 'error' });
       }
     } catch (error) {
       console.error('Error adding transaction:', error);
+      setToast({ message: 'Erro de conexão com o servidor', type: 'error' });
     }
   };
 
   const handleDelete = async (id: number) => {
+    if (!confirm('Tem certeza que deseja excluir?')) return;
     try {
-      await fetch(`/api/transactions/${id}`, { method: 'DELETE' });
-      fetchData();
+      const res = await fetch(`/api/transactions/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setToast({ message: 'Excluído com sucesso', type: 'success' });
+        fetchData();
+      }
     } catch (error) {
-      console.error('Error deleting transaction:', error);
+      setToast({ message: 'Erro ao excluir', type: 'error' });
     }
   };
 
@@ -179,6 +198,21 @@ const App = () => {
           </div>
         </div>
       </header>
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-2xl shadow-lg text-white font-bold text-sm flex items-center gap-2 whitespace-nowrap ${toast.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'}`}
+          >
+            {toast.type === 'success' ? <CheckCircle2 size={18} /> : <TrendingDown size={18} />}
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <main className="max-w-md mx-auto px-4 py-6 space-y-6">
         {activeTab === 'dashboard' && (

@@ -29,23 +29,42 @@ async function startServer() {
 
   // API Routes
   app.get("/api/transactions", (req, res) => {
-    const transactions = db.prepare("SELECT * FROM transactions ORDER BY date DESC, id DESC").all();
-    res.json(transactions);
+    try {
+      const transactions = db.prepare("SELECT * FROM transactions ORDER BY date DESC, id DESC").all();
+      res.json(transactions);
+    } catch (error) {
+      console.error("Fetch error:", error);
+      res.status(500).json({ error: "Erro ao buscar transações" });
+    }
   });
 
   app.post("/api/transactions", (req, res) => {
-    const { type, amount, date, responsible, payment_method, category, description } = req.body;
-    const stmt = db.prepare(`
-      INSERT INTO transactions (type, amount, date, responsible, payment_method, category, description)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    const result = stmt.run(type, amount, date, responsible, payment_method, category, description);
-    res.json({ id: result.lastInsertRowid });
+    try {
+      const { type, amount, date, responsible, payment_method, category, description } = req.body;
+      
+      if (!type || !amount || !date) {
+        return res.status(400).json({ error: "Dados obrigatórios faltando" });
+      }
+
+      const stmt = db.prepare(`
+        INSERT INTO transactions (type, amount, date, responsible, payment_method, category, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      const result = stmt.run(type, amount, date, responsible, payment_method, category, description);
+      res.json({ id: result.lastInsertRowid, success: true });
+    } catch (error) {
+      console.error("Insert error:", error);
+      res.status(500).json({ error: "Erro ao salvar no banco de dados" });
+    }
   });
 
   app.delete("/api/transactions/:id", (req, res) => {
-    db.prepare("DELETE FROM transactions WHERE id = ?").run(req.params.id);
-    res.json({ success: true });
+    try {
+      db.prepare("DELETE FROM transactions WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Erro ao deletar" });
+    }
   });
 
   app.post("/api/parse-expense", async (req, res) => {
