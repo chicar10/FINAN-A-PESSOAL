@@ -20,6 +20,17 @@ async function startServer() {
   app.use(express.json());
 
   // API Routes
+  app.get("/api/health", (req, res) => {
+    res.json({ 
+      status: "ok", 
+      supabase: !!supabase,
+      env: {
+        hasUrl: !!process.env.SUPABASE_URL,
+        hasKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY
+      }
+    });
+  });
+
   app.get("/api/transactions", async (req, res) => {
     try {
       if (!supabase) throw new Error("Supabase not configured");

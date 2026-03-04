@@ -18,7 +18,8 @@ import {
   Send,
   Loader2,
   CheckCircle2,
-  Download
+  Download,
+  Cloud
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { 
@@ -50,6 +51,7 @@ const App = () => {
   const [parsedExpense, setParsedExpense] = useState<Partial<Transaction> | null>(null);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [needsSync, setNeedsSync] = useState(false);
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState(false);
   
   // Filter states
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
@@ -108,14 +110,18 @@ const App = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [tRes, sRes, cRes] = await Promise.all([
+      const [tRes, sRes, cRes, hRes] = await Promise.all([
         fetch('/api/transactions'),
         fetch('/api/stats'),
-        fetch('/api/cards')
+        fetch('/api/cards'),
+        fetch('/api/health')
       ]);
       
       if (!tRes.ok) throw new Error('Server unavailable');
       
+      const health = await hRes.json();
+      setIsSupabaseConnected(health.supabase);
+
       const tData = await tRes.json();
       const sData = await sRes.json();
       const cData = await cRes.json();
@@ -123,17 +129,22 @@ const App = () => {
       const localData = localStorage.getItem('finance_transactions');
       const localTransactions = localData ? JSON.parse(localData) : [];
 
-      // If server is empty but we have local data, we might need to sync up
-      if (tData.length === 0 && localTransactions.length > 0) {
-        setNeedsSync(true);
+      if (health.supabase) {
+        // If server is empty but we have local data, we might need to sync up
+        if (tData.length === 0 && localTransactions.length > 0) {
+          setNeedsSync(true);
+          setTransactions(localTransactions);
+          setStats(calculateStatsLocally(localTransactions));
+        } else {
+          setTransactions(tData);
+          setStats(sData);
+          setNeedsSync(false);
+          localStorage.setItem('finance_transactions', JSON.stringify(tData));
+        }
+      } else {
+        // Fallback to local if Supabase is not configured on server
         setTransactions(localTransactions);
         setStats(calculateStatsLocally(localTransactions));
-      } else {
-        setTransactions(tData);
-        setStats(sData);
-        setNeedsSync(false);
-        // Update local storage to match server
-        localStorage.setItem('finance_transactions', JSON.stringify(tData));
       }
       
       setCards(cData);
@@ -146,6 +157,7 @@ const App = () => {
         setTransactions(parsedData);
         setStats(calculateStatsLocally(parsedData));
       }
+      setIsSupabaseConnected(false);
     } finally {
       setLoading(false);
     }
@@ -365,8 +377,16 @@ const App = () => {
             </div>
             <h1 className="font-bold text-lg tracking-tight">Finanças</h1>
           </div>
-          <div className="text-xs font-medium text-zinc-500 bg-zinc-100 px-2 py-1 rounded-full uppercase tracking-wider">
-            Março 2026
+          <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border ${isSupabaseConnected ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
+              <Cloud size={12} className={isSupabaseConnected ? '' : 'animate-pulse'} />
+              <span className="text-[10px] font-bold uppercase tracking-wider">
+                {isSupabaseConnected ? 'Nuvem' : 'Local'}
+              </span>
+            </div>
+            <div className="text-xs font-medium text-zinc-500 bg-zinc-100 px-2 py-1 rounded-full uppercase tracking-wider">
+              Março 2026
+            </div>
           </div>
         </div>
       </header>
