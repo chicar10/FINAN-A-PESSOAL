@@ -330,6 +330,16 @@ const App = () => {
     return matchesType && matchesCategory && matchesResponsible && matchesBank;
   });
 
+  const filteredTotalIncome = filteredTransactions
+    .filter(t => t.type === 'income')
+    .reduce((acc, t) => acc + t.amount, 0);
+  
+  const filteredTotalExpense = filteredTransactions
+    .filter(t => t.type === 'expense')
+    .reduce((acc, t) => acc + t.amount, 0);
+
+  const filteredBalance = filteredTotalIncome - filteredTotalExpense;
+
   const uniqueCategories = ['Investimento', 'Necessário', 'Lazer'];
   const uniqueResponsibles = Array.from(new Set(transactions.map(t => t.responsible))).filter(Boolean);
   const uniqueBanks = Array.from(new Set(transactions.map(t => t.bank))).filter(Boolean);
@@ -653,6 +663,28 @@ const App = () => {
                     <option key={bank} value={bank}>{bank}</option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            {/* Filtered Totals Summary */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-white p-3 rounded-2xl border border-zinc-100 shadow-sm">
+                <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Receitas</p>
+                <p className="text-xs font-bold text-emerald-600">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(filteredTotalIncome)}
+                </p>
+              </div>
+              <div className="bg-white p-3 rounded-2xl border border-zinc-100 shadow-sm">
+                <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Despesas</p>
+                <p className="text-xs font-bold text-rose-600">
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(filteredTotalExpense)}
+                </p>
+              </div>
+              <div className="bg-white p-3 rounded-2xl border border-zinc-100 shadow-sm">
+                <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">Saldo</p>
+                <p className={`text-xs font-bold ${filteredBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(filteredBalance)}
+                </p>
               </div>
             </div>
 
