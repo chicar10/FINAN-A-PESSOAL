@@ -1,41 +1,17 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
+import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database("finance.db");
-
-// Initialize database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL, -- 'income' or 'expense'
-    amount REAL NOT NULL,
-    date TEXT NOT NULL,
-    responsible TEXT,
-    payment_method TEXT, -- 'Crédito', 'Débito', 'Pix'
-    category TEXT, -- 'Investimento', 'Necessário', 'Lazer'
-    bank TEXT, -- Name of the bank
-    description TEXT,
-    installments INTEGER DEFAULT 1,
-    installment_number INTEGER DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS card_limits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    bank_name TEXT UNIQUE NOT NULL,
-    limit_amount REAL NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+// Supabase Client
+const supabaseUrl = process.env.SUPABASE_URL || "";
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 async function startServer() {
   const app = express();
@@ -44,18 +20,26 @@ async function startServer() {
   app.use(express.json());
 
   // API Routes
-  app.get("/api/transactions", (req, res) => {
+  app.get("/api/transactions", async (req, res) => {
     try {
-      const transactions = db.prepare("SELECT * FROM transactions ORDER BY date DESC, id DESC").all();
-      res.json(transactions);
+      if (!supabase) throw new Error("Supabase not configured");
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("*")
+        .order("date", { ascending: false })
+        .order("id", { ascending: false });
+      
+      if (error) throw error;
+      res.json(data);
     } catch (error) {
       console.error("Fetch error:", error);
       res.status(500).json({ error: "Erro ao buscar transações" });
     }
   });
 
-  app.post("/api/transactions", (req, res) => {
+  app.post("/api/transactions", async (req, res) => {
     try {
+      if (!supabase) throw new Error("Supabase not configured");
       const { type, amount, date, responsible, payment_method, category, bank, description, installments = 1 } = req.body;
       
       if (!type || !amount || !date) {
@@ -64,85 +48,94 @@ async function startServer() {
 
       if (payment_method === 'Crédito' && installments > 1) {
         const installmentAmount = amount / installments;
-        const stmt = db.prepare(`
-          INSERT INTO transactions (type, amount, date, responsible, payment_method, category, bank, description, installments, installment_number)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-
         const baseDate = new Date(date);
+        const newTransactions = [];
+
         for (let i = 1; i <= installments; i++) {
           const installmentDate = new Date(baseDate);
           installmentDate.setMonth(baseDate.getMonth() + (i - 1));
           const dateStr = installmentDate.toISOString().split('T')[0];
           
-          stmt.run(
+          newTransactions.push({
             type, 
-            installmentAmount, 
-            dateStr, 
+            amount: installmentAmount, 
+            date: dateStr, 
             responsible, 
             payment_method, 
             category, 
             bank, 
-            `${description} (${i}/${installments})`,
+            description: `${description} (${i}/${installments})`,
             installments,
-            i
-          );
+            installment_number: i
+          });
         }
+        
+        const { error } = await supabase.from("transactions").insert(newTransactions);
+        if (error) throw error;
         res.json({ success: true, message: `${installments} parcelas criadas` });
       } else {
-        const stmt = db.prepare(`
-          INSERT INTO transactions (type, amount, date, responsible, payment_method, category, bank, description, installments, installment_number)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-        const result = stmt.run(type, amount, date, responsible, payment_method, category, bank, description, 1, 1);
-        res.json({ id: result.lastInsertRowid, success: true });
+        const { data, error } = await supabase
+          .from("transactions")
+          .insert([{ type, amount, date, responsible, payment_method, category, bank, description, installments: 1, installment_number: 1 }])
+          .select();
+        
+        if (error) throw error;
+        res.json({ id: data[0].id, success: true });
       }
     } catch (error) {
       console.error("Insert error:", error);
-      res.status(500).json({ error: "Erro ao salvar no banco de dados" });
+      res.status(500).json({ error: "Erro ao salvar no Supabase" });
+    }
+  });
+
+  app.delete("/api/transactions/:id", async (req, res) => {
+    try {
+      if (!supabase) throw new Error("Supabase not configured");
+      const { error } = await supabase.from("transactions").delete().eq("id", req.params.id);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Erro ao deletar" });
     }
   });
 
   // Card Limits Routes
-  app.get("/api/cards", (req, res) => {
+  app.get("/api/cards", async (req, res) => {
     try {
-      const cards = db.prepare("SELECT * FROM card_limits").all();
-      res.json(cards);
+      if (!supabase) throw new Error("Supabase not configured");
+      const { data, error } = await supabase.from("card_limits").select("*");
+      if (error) throw error;
+      res.json(data);
     } catch (error) {
       res.status(500).json({ error: "Erro ao buscar limites" });
     }
   });
 
-  app.post("/api/cards", (req, res) => {
+  app.post("/api/cards", async (req, res) => {
     try {
+      if (!supabase) throw new Error("Supabase not configured");
       const { bank_name, limit_amount } = req.body;
-      const stmt = db.prepare(`
-        INSERT INTO card_limits (bank_name, limit_amount)
-        VALUES (?, ?)
-        ON CONFLICT(bank_name) DO UPDATE SET limit_amount = excluded.limit_amount, updated_at = CURRENT_TIMESTAMP
-      `);
-      stmt.run(bank_name, limit_amount);
+      
+      const { error } = await supabase
+        .from("card_limits")
+        .upsert({ bank_name, limit_amount, updated_at: new Date().toISOString() }, { onConflict: 'bank_name' });
+      
+      if (error) throw error;
       res.json({ success: true });
     } catch (error) {
+      console.error("Card limit error:", error);
       res.status(500).json({ error: "Erro ao salvar limite" });
     }
   });
 
-  app.delete("/api/cards/:id", (req, res) => {
+  app.delete("/api/cards/:id", async (req, res) => {
     try {
-      db.prepare("DELETE FROM card_limits WHERE id = ?").run(req.params.id);
+      if (!supabase) throw new Error("Supabase not configured");
+      const { error } = await supabase.from("card_limits").delete().eq("id", req.params.id);
+      if (error) throw error;
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Erro ao deletar limite" });
-    }
-  });
-
-  app.delete("/api/transactions/:id", (req, res) => {
-    try {
-      db.prepare("DELETE FROM transactions WHERE id = ?").run(req.params.id);
-      res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: "Erro ao deletar" });
     }
   });
 
@@ -196,18 +189,43 @@ async function startServer() {
     }
   });
 
-  app.get("/api/stats", (req, res) => {
-    const stats = db.prepare(`
-      SELECT 
-        strftime('%Y-%m', date) as month,
-        SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
-        SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expense
-      FROM transactions
-      GROUP BY month
-      ORDER BY month DESC
-      LIMIT 12
-    `).all();
-    res.json(stats);
+  app.get("/api/stats", async (req, res) => {
+    try {
+      if (!supabase) throw new Error("Supabase not configured");
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("type, amount, date");
+      
+      if (error) throw error;
+
+      const monthlyData: { [key: string]: { income: number, expense: number } } = {};
+      
+      data.forEach(t => {
+        const month = t.date.substring(0, 7);
+        if (!monthlyData[month]) {
+          monthlyData[month] = { income: 0, expense: 0 };
+        }
+        if (t.type === 'income') {
+          monthlyData[month].income += t.amount;
+        } else {
+          monthlyData[month].expense += t.amount;
+        }
+      });
+
+      const stats = Object.entries(monthlyData)
+        .map(([month, values]) => ({
+          month,
+          income: values.income,
+          expense: values.expense
+        }))
+        .sort((a, b) => b.month.localeCompare(a.month))
+        .slice(0, 12);
+
+      res.json(stats);
+    } catch (error) {
+      console.error("Stats error:", error);
+      res.status(500).json({ error: "Erro ao calcular estatísticas" });
+    }
   });
 
   // Vite middleware for development
