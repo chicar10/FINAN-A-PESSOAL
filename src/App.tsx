@@ -37,7 +37,13 @@ import {
 import { format, parseISO, startOfMonth, endOfMonth } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
+import { createClient } from '@supabase/supabase-js';
 import { Transaction, MonthlyStats, CardLimit } from './types';
+
+// Client-side Supabase fallback
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_EXPO_PUBLIC_SUPABASE_URL || "";
+const supabaseKey = import.meta.env.VITE_SUPABASE_KEY || import.meta.env.VITE_EXPO_PUBLIC_SUPABASE_KEY || "";
+const supabaseClient = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 const App = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -110,45 +116,59 @@ const App = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [tRes, sRes, cRes, hRes] = await Promise.all([
-        fetch('/api/transactions'),
-        fetch('/api/stats'),
-        fetch('/api/cards'),
-        fetch('/api/health')
-      ]);
+      // Try server first
+      const hRes = await fetch('/api/health').catch(() => null);
+      const isServerUp = hRes && hRes.ok;
       
-      if (!tRes.ok) throw new Error('Server unavailable');
-      
-      const health = await hRes.json();
-      setIsSupabaseConnected(health.supabase);
+      if (isServerUp) {
+        const health = await hRes.json();
+        setIsSupabaseConnected(health.supabase);
 
-      const tData = await tRes.json();
-      const sData = await sRes.json();
-      const cData = await cRes.json();
-      
-      const localData = localStorage.getItem('finance_transactions');
-      const localTransactions = localData ? JSON.parse(localData) : [];
+        const [tRes, sRes, cRes] = await Promise.all([
+          fetch('/api/transactions'),
+          fetch('/api/stats'),
+          fetch('/api/cards')
+        ]);
 
-      if (health.supabase) {
-        // If server is empty but we have local data, we might need to sync up
-        if (tData.length === 0 && localTransactions.length > 0) {
-          setNeedsSync(true);
+        const tData = await tRes.json();
+        const sData = await sRes.json();
+        const cData = await cRes.json();
+        
+        const localData = localStorage.getItem('finance_transactions');
+        const localTransactions = localData ? JSON.parse(localData) : [];
+
+        if (health.supabase) {
+          if (tData.length === 0 && localTransactions.length > 0) {
+            setNeedsSync(true);
+            setTransactions(localTransactions);
+            setStats(calculateStatsLocally(localTransactions));
+          } else {
+            setTransactions(tData);
+            setStats(sData);
+            setNeedsSync(false);
+            localStorage.setItem('finance_transactions', JSON.stringify(tData));
+          }
+        } else {
           setTransactions(localTransactions);
           setStats(calculateStatsLocally(localTransactions));
-        } else {
-          setTransactions(tData);
-          setStats(sData);
-          setNeedsSync(false);
-          localStorage.setItem('finance_transactions', JSON.stringify(tData));
         }
+        setCards(cData);
+      } else if (supabaseClient) {
+        // Direct Supabase fallback (useful for Vercel static)
+        console.log("Using direct Supabase connection");
+        const { data: tData } = await supabaseClient.from('transactions').select('*').order('date', { ascending: false });
+        const { data: cData } = await supabaseClient.from('card_limits').select('*');
+        
+        if (tData) {
+          setTransactions(tData);
+          setStats(calculateStatsLocally(tData));
+          localStorage.setItem('finance_transactions', JSON.stringify(tData));
+          setIsSupabaseConnected(true);
+        }
+        if (cData) setCards(cData);
       } else {
-        // Fallback to local if Supabase is not configured on server
-        setTransactions(localTransactions);
-        setStats(calculateStatsLocally(localTransactions));
+        throw new Error('No connection available');
       }
-      
-      setCards(cData);
-      localStorage.setItem('finance_cards', JSON.stringify(cData));
     } catch (error) {
       console.warn('Using local storage fallback:', error);
       const localData = localStorage.getItem('finance_transactions');
